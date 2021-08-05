@@ -1,0 +1,169 @@
+
+---
+
+- hosts: all
+  become: true
+ 
+
+
+  tasks:
+
+   - name: Add user to remote hosts
+     user: name=admin groups=sudo shell=/bin/bash password=$6$SroiJF6X3N8otTRh$tbKUXKbPW/DN/9JUVDH0YEgiiWQ1dP2zllah7zmLWkbwtH/XfIVUp55bCpbhYVIhmAkwGaYw5arvDC7ecDZgV0 
+   - name: Add SSH keys to remote hosts
+     authorized_key: user=user1 key={{ lookup('file', "/home/user1/.ssh/id_rsa.pub") }}
+          
+
+   - name: set sshd params
+     lineinfile:
+       dest: /etc/ssh/sshd_config
+       regexp: "{{ item.regexp }}"
+       line: "{{ item.line }}"
+       backrefs: yes
+       # notify:
+       # - restart sshd
+     with_items:
+      - { regexp: '^#*PermitRootLogin', line: 'PermitRootLogin no' }
+      #   - { regexp: '^#*IgnoreUserKnownHosts', line: 'IgnoreUserKnownHosts yes' }
+     tags: ssh
+          
+
+   - name: Add Docker apt key.
+     apt_key:
+        url: https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg
+        id: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+        state: present
+
+   - name: Configure Docker repository.
+     apt_repository:
+       repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+       state: present
+       update_cache: true
+
+   - name: Install Docker.
+     package:
+       name:
+       - docker-ce
+       - docker-ce-cli
+       - containerd.io
+       - python3-pip  
+       state: present       
+
+   - name: Add docker users to the docker group.
+     user:
+       name: user1
+       groups: docker
+       append: true
+
+   - name: Install Docker Module for Python
+     pip:
+        name: docker
+
+
+   - name: Copy project
+     copy:
+       src: ./project
+       dest: /home/user1/
+       owner: root
+       group: root
+       mode: 0644
+
+
+
+   - name: Ensure MOTD file is in place
+     template:
+       src: ./templates/index.j2
+       dest: /home/user1/project/www/index.html
+       owner: root
+       group: root
+       mode: 0644
+     
+
+   - name: Build Docker image from Dockerfile
+     docker_image:
+       name: test/nginx
+       path: /home/user1/project
+       source: build
+       state: present
+
+   - name: Create nginx container
+     docker_container:
+       name: nginx
+       image: test/nginx
+       state: started
+       volumes: 
+           - "/var/log/nginx"
+       ports: "80:80"
+       #       recreate: yes
+
+       #   - name: Allow connections on multiple ports
+       #ansible.builtin.iptables:
+       #chain: INPUT
+       # protocol: tcp
+       # destination_ports:
+       #  - "80"
+       #  - "443"
+       #  - "22"
+       #jump: ACCEPT
+
+       #  - name: Configure ufw rules
+       #ufw: rule={{ item.rule }} port={{ item.port }} proto={{ item.proto }}
+       # with_items:
+       #- { rule: 'limit', port: '{{ ssh_port | default("22") }}', proto: 'tcp' }
+       #- { rule: 'allow', port: '80', proto: 'tcp' }
+       #- { rule: 'allow', port: '443', proto: 'tcp' }
+ 
+   - name: Firewall rule - allow all loopback traffic
+     iptables:
+       action: append
+       chain: INPUT
+       in_interface: lo
+       jump: ACCEPT
+
+   - name: Firewall rule - allow established connections
+     iptables:
+       chain: INPUT
+       ctstate: ESTABLISHED,RELATED
+       jump: ACCEPT
+
+   - name: Firewall rule - allow port ping traffic
+     iptables:
+       chain: INPUT
+       jump: ACCEPT
+       protocol: icmp
+
+   - name: Firewall rule - allow port 22/SSH traffic
+     iptables:
+       chain: INPUT
+       destination_port: 22
+       jump: ACCEPT
+       protocol: tcp
+
+   - name: Firewall rule - allow port 80/HTTP traffic
+     iptables:
+       chain: INPUT
+       destination_port: 80
+       jump: ACCEPT
+       protocol: tcp
+
+   - name: Firewall rule - allow port 443/HTTPS traffic
+     iptables:
+       chain: INPUT
+       destination_port: 443
+       jump: ACCEPT
+       protocol: tcp
+
+   - name: Firewall rule - drop any traffic without rule
+     iptables:
+       chain: INPUT
+       jump: DROP
+
+   - name: Install `netfilter-persistent` && `iptables-persistent` packages
+     package:
+       name: "{{item}}"
+       state: present
+     with_items:
+      - iptables-persistent
+      - netfilter-persistent
+     when: ansible_os_family == "Debian" or ansible_os_family == "Ubuntu"
+
